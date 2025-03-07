@@ -24,6 +24,7 @@ jobs:
         esp_idf_version: release-v5.4
         path: '.'
         command: 'idf.py build'
+        target: esp32s3
 
     - name: Upload Build Outputs
       uses: actions/upload-artifact@v4
