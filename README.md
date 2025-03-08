@@ -7,6 +7,8 @@ esp-now to configure and command the two motors of the MotorGo Mini.
 An example control / transmitter app can be found at
 [esp-box-motor-gesture-control](https://github.com/finger563/esp-box-motor-gesture-control).
 
+https://github.com/user-attachments/assets/5c0ec87a-81c8-4247-a4b3-855d4f7b4968
+
 ## Cloning
 
 Since this repo contains a submodule, you need to make sure you clone it
