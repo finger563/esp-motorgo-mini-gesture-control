@@ -9,6 +9,15 @@ An example control / transmitter app can be found at
 
 https://github.com/user-attachments/assets/5c0ec87a-81c8-4247-a4b3-855d4f7b4968
 
+## Using
+
+To get the transmitter (ESP-BOX) and receiver (MotorGo Mini) communicating,
+simply double-click the `boot` button on both boards after they have both
+booted. This will bond them for this session using ESP-NOW. Once they're bonded,
+the ESP-BOX will continuously send its detected gravity vector in 3d to the
+MotorGo Mini. The x-y vector will be used to determine the target angle for the
+motors, if the x-y vector magnitude is large enough.
+
 ## Cloning
 
 Since this repo contains a submodule, you need to make sure you clone it
