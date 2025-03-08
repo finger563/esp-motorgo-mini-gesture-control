@@ -41,6 +41,10 @@ See the Getting Started Guide for full steps to configure and use ESP-IDF to bui
 
 Example screenshot of the console output from this app:
 
+![CleanShot 2025-03-08 at 16 17 09](https://github.com/user-attachments/assets/a9f1e8e5-5282-4725-b344-96d23c7ae5ab)
+
+
+![CleanShot 2025-03-08 at 16 17 41](https://github.com/user-attachments/assets/0fdc0fb7-8201-4862-8f68-cb1fab0ef426)
 
 
 ## Developing
