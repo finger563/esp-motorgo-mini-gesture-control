@@ -19,17 +19,21 @@
 #include "high_resolution_timer.hpp"
 #include "task.hpp"
 #include "timer.hpp"
+#include "vector2d.hpp"
 
 #include "motorgo-mini.hpp"
 using Bsp = espp::MotorGoMini;
 
 using namespace std::chrono_literals;
 
-static espp::Logger logger({.tag = "MGM", .level = espp::Logger::Verbosity::DEBUG});
+static espp::Logger logger({.tag = "MGM", .level = espp::Logger::Verbosity::INFO});
 
 enum class EspNowCtrlStatus { INIT, BOUND };
 static EspNowCtrlStatus espnow_ctrl_status = EspNowCtrlStatus::INIT;
 
+///////////////////////////////////////////
+/// ESP-NOW related functions and callbacks
+///////////////////////////////////////////
 static void init_wifi();
 static void espnow_event_handler(void *handler_args, esp_event_base_t base, int32_t id,
                                  void *event_data);
@@ -39,6 +43,20 @@ static void app_responder_ctrl_data_cb(espnow_attribute_t initiator_attribute,
                               espnow_attribute_t responder_attribute,
                               uint32_t status);
 static char *bind_error_to_string(espnow_ctrl_bind_error_t bind_error);
+
+/////////////////////////////////////////////////
+/// Motor control related variables and functions
+/////////////////////////////////////////////////
+static auto motion_control_type = espp::detail::MotionControlType::ANGLE;
+// static constexpr auto motion_control_type = espp::detail::MotionControlType::VELOCITY_OPENLOOP;
+// static constexpr auto motion_control_type = espp::detail::MotionControlType::VELOCITY;
+// static const auto motion_control_type = espp::detail::MotionControlType::ANGLE_OPENLOOP;
+
+std::atomic<float> target1 = 60.0f;
+std::atomic<float> target2 = 60.0f;
+static bool target_is_angle =
+  motion_control_type == espp::detail::MotionControlType::ANGLE ||
+  motion_control_type == espp::detail::MotionControlType::ANGLE_OPENLOOP;
 
 extern "C" void app_main(void) {
 
@@ -112,11 +130,6 @@ extern "C" void app_main(void) {
   // - change the target
   // - start / stop the motors
 
-  // static constexpr auto motion_control_type = espp::detail::MotionControlType::VELOCITY_OPENLOOP;
-  // static constexpr auto motion_control_type = espp::detail::MotionControlType::VELOCITY;
-  // static const auto motion_control_type = espp::detail::MotionControlType::ANGLE_OPENLOOP;
-  static auto motion_control_type = espp::detail::MotionControlType::ANGLE;
-
   logger.info("Setting motion control type to {}", motion_control_type);
   motor1.set_motion_control_type(motion_control_type);
   motor2.set_motion_control_type(motion_control_type);
@@ -124,23 +137,14 @@ extern "C" void app_main(void) {
   motor1.enable();
   motor2.enable();
 
-  std::atomic<float> target1 = 60.0f;
-  std::atomic<float> target2 = 60.0f;
-  static bool target_is_angle =
-      motion_control_type == espp::detail::MotionControlType::ANGLE ||
-      motion_control_type == espp::detail::MotionControlType::ANGLE_OPENLOOP;
-  // Function for initializing the target based on the motion control type
-  auto initialize_target = [&]() {
-    if (target_is_angle) {
-      target1 = motor1.get_shaft_angle();
-      target2 = motor2.get_shaft_angle();
-    } else {
-      target1 = 50.0f * espp::RPM_TO_RADS;
-      target2 = 50.0f * espp::RPM_TO_RADS;
-    }
-  };
-  // run it once
-  initialize_target();
+  // set the initial target
+  if (target_is_angle) {
+    target1 = motor1.get_shaft_angle();
+    target2 = motor2.get_shaft_angle();
+  } else {
+    target1 = 50.0f * espp::RPM_TO_RADS;
+    target2 = 50.0f * espp::RPM_TO_RADS;
+  }
 
   auto dual_motor_fn = [&]() -> bool {
     motor1.loop_foc();
@@ -207,42 +211,6 @@ extern "C" void app_main(void) {
 
   std::this_thread::sleep_for(1s);
 
-  logger.info("Starting target task");
-
-  enum class IncrementDirection { DOWN = -1, HOLD = 0, UP = 1 };
-  static IncrementDirection increment_direction1 = IncrementDirection::UP;
-  static IncrementDirection increment_direction2 = IncrementDirection::DOWN;
-
-  auto update_target = [&](auto &target, auto &increment_direction) {
-    float max_target = target_is_angle ? (2.0f * M_PI) : (200.0f * espp::RPM_TO_RADS);
-    float target_delta =
-        target_is_angle ? (M_PI / 4.0f) : (50.0f * espp::RPM_TO_RADS * core_update_period);
-    // update target
-    if (increment_direction == IncrementDirection::UP) {
-      target += target_delta;
-      if (target >= max_target) {
-        increment_direction = IncrementDirection::DOWN;
-      }
-    } else if (increment_direction == IncrementDirection::DOWN) {
-      target -= target_delta;
-      if (target <= -max_target) {
-        increment_direction = IncrementDirection::UP;
-      }
-    }
-  };
-
-  // make a task which will update the target (velocity or angle)
-  auto target_task_fn = [&]() -> bool {
-    update_target(target1, increment_direction1);
-    update_target(target2, increment_direction2);
-    return false; // don't want to stop the task
-  };
-  auto target_task = espp::Timer({
-      .period = std::chrono::duration<float>(target_is_angle? 1.0f : core_update_period),
-      .callback = target_task_fn,
-      .task_config = {.name = "Target Task"},
-  });
-
   // initialize the wifi and esp-now stacks
   espnow_storage_init();
 
@@ -307,12 +275,38 @@ void espnow_event_handler(void *handler_args, esp_event_base_t base, int32_t id,
 
 esp_err_t on_esp_now_recv(uint8_t *src_addr, void *data, size_t size,
                                      wifi_pkt_rx_ctrl_t *rx_ctrl) {
-  logger.info("Received data from {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}", MAC2STR(src_addr));
-  logger.info("RSSI: {}", (int)rx_ctrl->rssi);
+  logger.debug("Received data from {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}", MAC2STR(src_addr));
+  logger.debug("RSSI: {}", (int)rx_ctrl->rssi);
   uint8_t *data_ptr = reinterpret_cast<uint8_t *>(data);
-  logger.info("Data: {::02x}", std::vector<uint8_t>(data_ptr, data_ptr + size));
+  logger.debug("Data: {::02x}", std::vector<uint8_t>(data_ptr, data_ptr + size));
   // TODO: parse this into a control command
 
+  // if it's 3 bytes, then assume it's a gravity vector, with 0 value being 127
+  // on each axis. The values are in the range of 0-255, so we need to normalize
+  // them to -1 to 1.
+  if(size == 3) {
+    float x = (data_ptr[0] - 127.0f) / 127.0f;
+    float y = (data_ptr[1] - 127.0f) / 127.0f;
+    float z = (data_ptr[2] - 127.0f) / 127.0f;
+    logger.debug("Gravity vector: ({:.2f}, {:.2f}, {:.2f})", x, y, z);
+
+    // Get just the x/y axes of the vector, and if the magnitude of that 2-vector
+    // is > 0.3, then use it to determine the new target angle of the motor
+    espp::Vector2f grav_2d{x, y};
+    if (grav_2d.magnitude() > 0.3f) {
+      // we can use it to determine the angle of the motor. We will compute the
+      // angle between the received gravity vector and the -y axis, and use that
+      // as the target angle.
+      espp::Vector2f y_axis{0.0f, -1.0f};
+      // The angle between can be calculated using the dot product formula
+      // cos(theta) = (a . b) / (|a| * |b|)
+      float angle = grav_2d.angle(y_axis);
+      logger.debug("Angle: {:.2f}", angle);
+      target1 = angle;
+      target2 = angle;
+    }
+
+  }
   return ESP_OK;
 }
 
