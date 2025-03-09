@@ -42,7 +42,7 @@ static esp_err_t on_esp_now_recv(uint8_t *src_addr, void *data, size_t size,
 static void app_responder_ctrl_data_cb(espnow_attribute_t initiator_attribute,
                               espnow_attribute_t responder_attribute,
                               uint32_t status);
-static char *bind_error_to_string(espnow_ctrl_bind_error_t bind_error);
+static constexpr const char *bind_error_to_string(espnow_ctrl_bind_error_t bind_error);
 
 /////////////////////////////////////////////////
 /// Motor control related variables and functions
@@ -122,9 +122,6 @@ extern "C" void app_main(void) {
   auto &motor1 = bsp.motor1();
   auto &motor2 = bsp.motor2();
 
-  static constexpr uint64_t core_update_period_us = 1000;                   // microseconds
-  static constexpr float core_update_period = core_update_period_us / 1e6f; // seconds
-
   // TODO: receive commands over esp-now to:
   // - change the motion control type
   // - change the target
@@ -154,6 +151,7 @@ extern "C" void app_main(void) {
     return false; // don't want to stop the task
   };
 
+  static constexpr uint64_t core_update_period_us = 1000;                   // microseconds
   auto dual_motor_timer = espp::HighResolutionTimer({.name = "Motor Timer",
                                                      .callback = dual_motor_fn,
                                                      .log_level = espp::Logger::Verbosity::WARN});
@@ -223,8 +221,6 @@ extern "C" void app_main(void) {
 
   ESP_ERROR_CHECK(espnow_ctrl_responder_bind(30 * 1000, -55, NULL));
   espnow_ctrl_responder_data(app_responder_ctrl_data_cb);
-
-  bool button_state = false;
 
   while (true) {
     std::this_thread::sleep_for(50ms);
@@ -316,7 +312,7 @@ void app_responder_ctrl_data_cb(espnow_attribute_t initiator_attribute,
   // TODO: handle the control data
 }
 
-char *bind_error_to_string(espnow_ctrl_bind_error_t bind_error) {
+constexpr const char *bind_error_to_string(espnow_ctrl_bind_error_t bind_error) {
     switch (bind_error) {
     case ESPNOW_BIND_ERROR_NONE:
         return "No error";
