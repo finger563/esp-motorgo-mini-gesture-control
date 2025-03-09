@@ -24,16 +24,25 @@
 #include "motorgo-mini.hpp"
 using Bsp = espp::MotorGoMini;
 
+#include "command.hpp"
+
 using namespace std::chrono_literals;
 
 static espp::Logger logger({.tag = "MGM", .level = espp::Logger::Verbosity::INFO});
 
+/////////////////////////////
+// Motor Control variables
+/////////////////////////////
+
+std::shared_ptr<espp::MotorGoMini::BldcMotor> motor1_ptr;
+std::shared_ptr<espp::MotorGoMini::BldcMotor> motor2_ptr;
+
+///////////////////////////////////////////
+/// ESP-NOW related variables and functions
+///////////////////////////////////////////
 enum class EspNowCtrlStatus { INIT, BOUND };
 static EspNowCtrlStatus espnow_ctrl_status = EspNowCtrlStatus::INIT;
 
-///////////////////////////////////////////
-/// ESP-NOW related functions and callbacks
-///////////////////////////////////////////
 static void init_wifi();
 static void espnow_event_handler(void *handler_args, esp_event_base_t base, int32_t id,
                                  void *event_data);
@@ -121,6 +130,10 @@ extern "C" void app_main(void) {
   bsp.init_motor_channel_2();
   auto &motor1 = bsp.motor1();
   auto &motor2 = bsp.motor2();
+
+  // set the shared pointers to the motors for the esp-now callback
+  motor1_ptr = std::shared_ptr<espp::MotorGoMini::BldcMotor>(std::shared_ptr<espp::MotorGoMini::BldcMotor>{}, &motor1);
+  motor2_ptr = std::shared_ptr<espp::MotorGoMini::BldcMotor>(std::shared_ptr<espp::MotorGoMini::BldcMotor>{}, &motor2);
 
   // TODO: receive commands over esp-now to:
   // - change the motion control type
@@ -275,34 +288,48 @@ esp_err_t on_esp_now_recv(uint8_t *src_addr, void *data, size_t size,
   logger.debug("RSSI: {}", (int)rx_ctrl->rssi);
   uint8_t *data_ptr = reinterpret_cast<uint8_t *>(data);
   logger.debug("Data: {::02x}", std::vector<uint8_t>(data_ptr, data_ptr + size));
-  // TODO: parse this into a control command
 
-  // if it's 3 bytes, then assume it's a gravity vector, with 0 value being 127
-  // on each axis. The values are in the range of 0-255, so we need to normalize
-  // them to -1 to 1.
-  if(size == 3) {
-    float x = (data_ptr[0] - 127.0f) / 127.0f;
-    float y = (data_ptr[1] - 127.0f) / 127.0f;
-    float z = (data_ptr[2] - 127.0f) / 127.0f;
-    logger.debug("Gravity vector: ({:.2f}, {:.2f}, {:.2f})", x, y, z);
-
-    // Get just the x/y axes of the vector, and if the magnitude of that 2-vector
-    // is > 0.3, then use it to determine the new target angle of the motor
-    espp::Vector2f grav_2d{x, y};
-    if (grav_2d.magnitude() > 0.3f) {
-      // we can use it to determine the angle of the motor. We will compute the
-      // angle between the received gravity vector and the -y axis, and use that
-      // as the target angle.
-      espp::Vector2f y_axis{0.0f, -1.0f};
-      // The angle between can be calculated using the dot product formula
-      // cos(theta) = (a . b) / (|a| * |b|)
-      float angle = grav_2d.angle(y_axis);
-      logger.debug("Angle: {:.2f}", angle);
-      target1 = angle;
-      target2 = angle;
-    }
-
+  // parse this into a control command
+  Command command;
+  if (size == 0 || size > sizeof(command)) {
+    logger.warn("Invalid command size: {}", size);
+    // don't return fail, as we don't want to stop the esp-now processing
+    return ESP_OK;
   }
+
+  // it _should_ be a valid command, so copy it into the command struct
+  std::memcpy(&command, data_ptr, size);
+
+  switch (command.code) {
+  case CommandCode::NONE:
+    return ESP_OK;
+  case CommandCode::STOP:
+    // disable the motors
+    target1 = 0.0f;
+    target2 = 0.0f;
+    if (motor1_ptr->is_enabled())
+      motor1_ptr->disable();
+    if (motor2_ptr->is_enabled())
+      motor2_ptr->disable();
+    break;
+  case CommandCode::SET_ANGLE:
+    target1 = command.angle_radians;
+    target2 = command.angle_radians;
+    if (!motor1_ptr->is_enabled())
+      motor1_ptr->enable();
+    if (!motor2_ptr->is_enabled())
+      motor2_ptr->enable();
+    break;
+  case CommandCode::SET_SPEED:
+    target1 = command.speed_radians_per_second;
+    target2 = command.speed_radians_per_second;
+    if (!motor1_ptr->is_enabled())
+      motor1_ptr->enable();
+    if (!motor2_ptr->is_enabled())
+      motor2_ptr->enable();
+    break;
+  }
+
   return ESP_OK;
 }
 
