@@ -24,16 +24,33 @@
 #include "motorgo-mini.hpp"
 using Bsp = espp::MotorGoMini;
 
+#include "command.hpp"
+
 using namespace std::chrono_literals;
 
 static espp::Logger logger({.tag = "MGM", .level = espp::Logger::Verbosity::INFO});
 
+///////////////////////////
+/// Motor control variables
+///////////////////////////
+
+static auto motion_control_type = espp::detail::MotionControlType::ANGLE;
+
+std::atomic<float> target1 = 60.0f;
+std::atomic<float> target2 = 60.0f;
+static std::atomic<bool> target_is_angle =
+  motion_control_type == espp::detail::MotionControlType::ANGLE ||
+  motion_control_type == espp::detail::MotionControlType::ANGLE_OPENLOOP;
+
+std::shared_ptr<espp::MotorGoMini::BldcMotor> motor1_ptr;
+std::shared_ptr<espp::MotorGoMini::BldcMotor> motor2_ptr;
+
+///////////////////////////////////////////
+/// ESP-NOW related variables and functions
+///////////////////////////////////////////
 enum class EspNowCtrlStatus { INIT, BOUND };
 static EspNowCtrlStatus espnow_ctrl_status = EspNowCtrlStatus::INIT;
 
-///////////////////////////////////////////
-/// ESP-NOW related functions and callbacks
-///////////////////////////////////////////
 static void init_wifi();
 static void espnow_event_handler(void *handler_args, esp_event_base_t base, int32_t id,
                                  void *event_data);
@@ -42,21 +59,7 @@ static esp_err_t on_esp_now_recv(uint8_t *src_addr, void *data, size_t size,
 static void app_responder_ctrl_data_cb(espnow_attribute_t initiator_attribute,
                               espnow_attribute_t responder_attribute,
                               uint32_t status);
-static char *bind_error_to_string(espnow_ctrl_bind_error_t bind_error);
-
-/////////////////////////////////////////////////
-/// Motor control related variables and functions
-/////////////////////////////////////////////////
-static auto motion_control_type = espp::detail::MotionControlType::ANGLE;
-// static constexpr auto motion_control_type = espp::detail::MotionControlType::VELOCITY_OPENLOOP;
-// static constexpr auto motion_control_type = espp::detail::MotionControlType::VELOCITY;
-// static const auto motion_control_type = espp::detail::MotionControlType::ANGLE_OPENLOOP;
-
-std::atomic<float> target1 = 60.0f;
-std::atomic<float> target2 = 60.0f;
-static bool target_is_angle =
-  motion_control_type == espp::detail::MotionControlType::ANGLE ||
-  motion_control_type == espp::detail::MotionControlType::ANGLE_OPENLOOP;
+static constexpr const char *bind_error_to_string(espnow_ctrl_bind_error_t bind_error);
 
 extern "C" void app_main(void) {
 
@@ -122,8 +125,9 @@ extern "C" void app_main(void) {
   auto &motor1 = bsp.motor1();
   auto &motor2 = bsp.motor2();
 
-  static constexpr uint64_t core_update_period_us = 1000;                   // microseconds
-  static constexpr float core_update_period = core_update_period_us / 1e6f; // seconds
+  // set the shared pointers to the motors for the esp-now callback
+  motor1_ptr = std::shared_ptr<espp::MotorGoMini::BldcMotor>(std::shared_ptr<espp::MotorGoMini::BldcMotor>{}, &motor1);
+  motor2_ptr = std::shared_ptr<espp::MotorGoMini::BldcMotor>(std::shared_ptr<espp::MotorGoMini::BldcMotor>{}, &motor2);
 
   // TODO: receive commands over esp-now to:
   // - change the motion control type
@@ -154,6 +158,7 @@ extern "C" void app_main(void) {
     return false; // don't want to stop the task
   };
 
+  static constexpr uint64_t core_update_period_us = 1000;                   // microseconds
   auto dual_motor_timer = espp::HighResolutionTimer({.name = "Motor Timer",
                                                      .callback = dual_motor_fn,
                                                      .log_level = espp::Logger::Verbosity::WARN});
@@ -224,8 +229,6 @@ extern "C" void app_main(void) {
   ESP_ERROR_CHECK(espnow_ctrl_responder_bind(30 * 1000, -55, NULL));
   espnow_ctrl_responder_data(app_responder_ctrl_data_cb);
 
-  bool button_state = false;
-
   while (true) {
     std::this_thread::sleep_for(50ms);
   }
@@ -279,34 +282,76 @@ esp_err_t on_esp_now_recv(uint8_t *src_addr, void *data, size_t size,
   logger.debug("RSSI: {}", (int)rx_ctrl->rssi);
   uint8_t *data_ptr = reinterpret_cast<uint8_t *>(data);
   logger.debug("Data: {::02x}", std::vector<uint8_t>(data_ptr, data_ptr + size));
-  // TODO: parse this into a control command
 
-  // if it's 3 bytes, then assume it's a gravity vector, with 0 value being 127
-  // on each axis. The values are in the range of 0-255, so we need to normalize
-  // them to -1 to 1.
-  if(size == 3) {
-    float x = (data_ptr[0] - 127.0f) / 127.0f;
-    float y = (data_ptr[1] - 127.0f) / 127.0f;
-    float z = (data_ptr[2] - 127.0f) / 127.0f;
-    logger.debug("Gravity vector: ({:.2f}, {:.2f}, {:.2f})", x, y, z);
-
-    // Get just the x/y axes of the vector, and if the magnitude of that 2-vector
-    // is > 0.3, then use it to determine the new target angle of the motor
-    espp::Vector2f grav_2d{x, y};
-    if (grav_2d.magnitude() > 0.3f) {
-      // we can use it to determine the angle of the motor. We will compute the
-      // angle between the received gravity vector and the -y axis, and use that
-      // as the target angle.
-      espp::Vector2f y_axis{0.0f, -1.0f};
-      // The angle between can be calculated using the dot product formula
-      // cos(theta) = (a . b) / (|a| * |b|)
-      float angle = grav_2d.angle(y_axis);
-      logger.debug("Angle: {:.2f}", angle);
-      target1 = angle;
-      target2 = angle;
-    }
-
+  // parse this into a control command
+  Command command;
+  if (size == 0 || size > sizeof(command)) {
+    logger.warn("Invalid command size: {}", size);
+    // don't return fail, as we don't want to stop the esp-now processing
+    return ESP_OK;
   }
+
+  // it _should_ be a valid command, so copy it into the command struct
+  std::memcpy(&command, data_ptr, size);
+
+  switch (command.code) {
+  case CommandCode::NONE:
+    return ESP_OK;
+  case CommandCode::STOP:
+    // disable the motors
+    target1 = 0.0f;
+    target2 = 0.0f;
+    if (motor1_ptr->is_enabled())
+      motor1_ptr->disable();
+    if (motor2_ptr->is_enabled())
+      motor2_ptr->disable();
+    break;
+
+  case CommandCode::SET_ANGLE:
+    motion_control_type = espp::detail::MotionControlType::ANGLE;
+    if (!target_is_angle) {
+      // disable the motors
+      motor1_ptr->disable();
+      motor2_ptr->disable();
+      // update the motion control type
+      motor1_ptr->set_motion_control_type(motion_control_type);
+      motor2_ptr->set_motion_control_type(motion_control_type);
+      // reset the angle for each motor, so that when we get a new target, it
+      // doesn't jump to the new target from wherever it could have been if the
+      // motor was running in speed control mode
+      static auto &bsp = Bsp::get();
+      bsp.reset_encoder1_accumulator();
+      bsp.reset_encoder2_accumulator();
+    }
+    target1 = command.angle_radians;
+    target2 = command.angle_radians;
+    target_is_angle = true;
+    if (!motor1_ptr->is_enabled())
+      motor1_ptr->enable();
+    if (!motor2_ptr->is_enabled())
+      motor2_ptr->enable();
+    break;
+
+  case CommandCode::SET_SPEED:
+    motion_control_type = espp::detail::MotionControlType::VELOCITY;
+    if (target_is_angle) {
+      // disable the motors
+      motor1_ptr->disable();
+      motor2_ptr->disable();
+      // update the motion control type
+      motor1_ptr->set_motion_control_type(motion_control_type);
+      motor2_ptr->set_motion_control_type(motion_control_type);
+    }
+    target1 = command.speed_radians_per_second;
+    target2 = command.speed_radians_per_second;
+    target_is_angle = false;
+    if (!motor1_ptr->is_enabled())
+      motor1_ptr->enable();
+    if (!motor2_ptr->is_enabled())
+      motor2_ptr->enable();
+    break;
+  }
+
   return ESP_OK;
 }
 
@@ -316,7 +361,7 @@ void app_responder_ctrl_data_cb(espnow_attribute_t initiator_attribute,
   // TODO: handle the control data
 }
 
-char *bind_error_to_string(espnow_ctrl_bind_error_t bind_error) {
+constexpr const char *bind_error_to_string(espnow_ctrl_bind_error_t bind_error) {
     switch (bind_error) {
     case ESPNOW_BIND_ERROR_NONE:
         return "No error";
