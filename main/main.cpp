@@ -30,9 +30,17 @@ using namespace std::chrono_literals;
 
 static espp::Logger logger({.tag = "MGM", .level = espp::Logger::Verbosity::INFO});
 
-/////////////////////////////
-// Motor Control variables
-/////////////////////////////
+///////////////////////////
+/// Motor control variables
+///////////////////////////
+
+static auto motion_control_type = espp::detail::MotionControlType::ANGLE;
+
+std::atomic<float> target1 = 60.0f;
+std::atomic<float> target2 = 60.0f;
+static std::atomic<bool> target_is_angle =
+  motion_control_type == espp::detail::MotionControlType::ANGLE ||
+  motion_control_type == espp::detail::MotionControlType::ANGLE_OPENLOOP;
 
 std::shared_ptr<espp::MotorGoMini::BldcMotor> motor1_ptr;
 std::shared_ptr<espp::MotorGoMini::BldcMotor> motor2_ptr;
@@ -52,20 +60,6 @@ static void app_responder_ctrl_data_cb(espnow_attribute_t initiator_attribute,
                               espnow_attribute_t responder_attribute,
                               uint32_t status);
 static constexpr const char *bind_error_to_string(espnow_ctrl_bind_error_t bind_error);
-
-/////////////////////////////////////////////////
-/// Motor control related variables and functions
-/////////////////////////////////////////////////
-static auto motion_control_type = espp::detail::MotionControlType::ANGLE;
-// static constexpr auto motion_control_type = espp::detail::MotionControlType::VELOCITY_OPENLOOP;
-// static constexpr auto motion_control_type = espp::detail::MotionControlType::VELOCITY;
-// static const auto motion_control_type = espp::detail::MotionControlType::ANGLE_OPENLOOP;
-
-std::atomic<float> target1 = 60.0f;
-std::atomic<float> target2 = 60.0f;
-static bool target_is_angle =
-  motion_control_type == espp::detail::MotionControlType::ANGLE ||
-  motion_control_type == espp::detail::MotionControlType::ANGLE_OPENLOOP;
 
 extern "C" void app_main(void) {
 
@@ -312,17 +306,45 @@ esp_err_t on_esp_now_recv(uint8_t *src_addr, void *data, size_t size,
     if (motor2_ptr->is_enabled())
       motor2_ptr->disable();
     break;
+
   case CommandCode::SET_ANGLE:
+    motion_control_type = espp::detail::MotionControlType::ANGLE;
+    if (!target_is_angle) {
+      // disable the motors
+      motor1_ptr->disable();
+      motor2_ptr->disable();
+      // update the motion control type
+      motor1_ptr->set_motion_control_type(motion_control_type);
+      motor2_ptr->set_motion_control_type(motion_control_type);
+      // reset the angle for each motor, so that when we get a new target, it
+      // doesn't jump to the new target from wherever it could have been if the
+      // motor was running in speed control mode
+      static auto &bsp = Bsp::get();
+      bsp.reset_encoder1_accumulator();
+      bsp.reset_encoder2_accumulator();
+    }
     target1 = command.angle_radians;
     target2 = command.angle_radians;
+    target_is_angle = true;
     if (!motor1_ptr->is_enabled())
       motor1_ptr->enable();
     if (!motor2_ptr->is_enabled())
       motor2_ptr->enable();
     break;
+
   case CommandCode::SET_SPEED:
+    motion_control_type = espp::detail::MotionControlType::VELOCITY;
+    if (target_is_angle) {
+      // disable the motors
+      motor1_ptr->disable();
+      motor2_ptr->disable();
+      // update the motion control type
+      motor1_ptr->set_motion_control_type(motion_control_type);
+      motor2_ptr->set_motion_control_type(motion_control_type);
+    }
     target1 = command.speed_radians_per_second;
     target2 = command.speed_radians_per_second;
+    target_is_angle = false;
     if (!motor1_ptr->is_enabled())
       motor1_ptr->enable();
     if (!motor2_ptr->is_enabled())
