@@ -18,6 +18,18 @@ the ESP-BOX will continuously send its detected gravity vector in 3d to the
 MotorGo Mini. The x-y vector will be used to determine the target angle for the
 motors, if the x-y vector magnitude is large enough.
 
+The system starts out such that the control mode is in the `STOP` state. Once
+they are paired, you can use a `single press of the boot button` on the
+`ESP-BOX` to cycle the control mode.
+
+Control Modes:
+* `STOP`: in this mode, both motors are off / disabled
+* `SET_ANGLE`: in this mode, the angle of the ESP-BOX is sent as the control
+  command to set the target angle for the two motors.
+* `SET_SPEED`: in this mode, the angle of the ESP-BOX is converted into a speed
+  (one full rotation is equal to 60 RPM / 1 rps) control command to set the
+  target speed for the two motors.
+
 ## Cloning
 
 Since this repo contains a submodule, you need to make sure you clone it
