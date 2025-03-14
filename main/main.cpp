@@ -42,8 +42,8 @@ static std::atomic<bool> target_is_angle =
   motion_control_type == espp::detail::MotionControlType::ANGLE ||
   motion_control_type == espp::detail::MotionControlType::ANGLE_OPENLOOP;
 
-std::shared_ptr<espp::MotorGoMini::BldcMotor> motor1_ptr;
-std::shared_ptr<espp::MotorGoMini::BldcMotor> motor2_ptr;
+std::shared_ptr<espp::MotorGoMini::BldcMotor> motor1;
+std::shared_ptr<espp::MotorGoMini::BldcMotor> motor2;
 
 ///////////////////////////////////////////
 /// ESP-NOW related variables and functions
@@ -66,6 +66,10 @@ extern "C" void app_main(void) {
   logger.info("Bootup");
 
   auto &bsp = Bsp::get();
+  // turn off the LEDs, we'll use them to show:
+  // - Bond status: yellow LED
+  // - Motor running status: red LED
+  bsp.stop_breathing();
   bsp.set_log_level(espp::Logger::Verbosity::INFO);
 
   logger.info("Initializing the button");
@@ -102,6 +106,12 @@ extern "C" void app_main(void) {
           logger.info("Resetting esp-now binding");
           espnow_ctrl_initiator_bind(ESPNOW_ATTRIBUTE_KEY_1, false);
           espnow_ctrl_status = EspNowCtrlStatus::INIT;
+          // disable the motors
+          motor1->disable();
+          motor2->disable();
+          // update the LED states
+          bsp.set_yellow_led_duty(0.0f);
+          bsp.set_red_led_duty(0.0f);
         }
       }
 
@@ -112,6 +122,7 @@ extern "C" void app_main(void) {
           logger.info("Starting esp-now binding");
           espnow_ctrl_initiator_bind(ESPNOW_ATTRIBUTE_KEY_1, true);
           espnow_ctrl_status = EspNowCtrlStatus::BOUND;
+          bsp.set_yellow_led_duty(100.0f);
         }
         // reset the double press state
         last_double_press_state = false;
@@ -119,15 +130,12 @@ extern "C" void app_main(void) {
     }
   };
   bsp.initialize_button(on_button_pressed);
-
-  bsp.init_motor_channel_1();
-  bsp.init_motor_channel_2();
-  auto &motor1 = bsp.motor1();
-  auto &motor2 = bsp.motor2();
-
-  // set the shared pointers to the motors for the esp-now callback
-  motor1_ptr = std::shared_ptr<espp::MotorGoMini::BldcMotor>(std::shared_ptr<espp::MotorGoMini::BldcMotor>{}, &motor1);
-  motor2_ptr = std::shared_ptr<espp::MotorGoMini::BldcMotor>(std::shared_ptr<espp::MotorGoMini::BldcMotor>{}, &motor2);
+  auto motor1_config = bsp.default_motor1_config;
+  auto motor2_config = bsp.default_motor2_config;
+  bsp.init_motor_channel_1(motor1_config);
+  bsp.init_motor_channel_2(motor2_config);
+  motor1 = bsp.motor1();
+  motor2 = bsp.motor2();
 
   // TODO: receive commands over esp-now to:
   // - change the motion control type
@@ -135,26 +143,23 @@ extern "C" void app_main(void) {
   // - start / stop the motors
 
   logger.info("Setting motion control type to {}", motion_control_type);
-  motor1.set_motion_control_type(motion_control_type);
-  motor2.set_motion_control_type(motion_control_type);
-
-  motor1.enable();
-  motor2.enable();
+  motor1->set_motion_control_type(motion_control_type);
+  motor2->set_motion_control_type(motion_control_type);
 
   // set the initial target
   if (target_is_angle) {
-    target1 = motor1.get_shaft_angle();
-    target2 = motor2.get_shaft_angle();
+    target1 = motor1->get_shaft_angle();
+    target2 = motor2->get_shaft_angle();
   } else {
     target1 = 50.0f * espp::RPM_TO_RADS;
     target2 = 50.0f * espp::RPM_TO_RADS;
   }
 
   auto dual_motor_fn = [&]() -> bool {
-    motor1.loop_foc();
-    motor2.loop_foc();
-    motor1.move(target1);
-    motor2.move(target2);
+    motor1->loop_foc();
+    motor2->loop_foc();
+    motor1->move(target1);
+    motor2->move(target2);
     return false; // don't want to stop the task
   };
 
@@ -196,10 +201,10 @@ extern "C" void app_main(void) {
     auto _target2 = target2.load();
     if (!target_is_angle)
       _target2 *= espp::RADS_TO_RPM;
-    auto rpm1 = filter1(motor1.get_shaft_velocity() * espp::RADS_TO_RPM);
-    auto rpm2 = filter2(motor2.get_shaft_velocity() * espp::RADS_TO_RPM);
-    auto rads1 = motor1.get_shaft_angle();
-    auto rads2 = motor2.get_shaft_angle();
+    auto rpm1 = filter1(motor1->get_shaft_velocity() * espp::RADS_TO_RPM);
+    auto rpm2 = filter2(motor2->get_shaft_velocity() * espp::RADS_TO_RPM);
+    auto rads1 = motor1->get_shaft_angle();
+    auto rads2 = motor2->get_shaft_angle();
     fmt::print("{:.3f}, {:.3f}, {:.3f}, {:.3f}, {:.3f}, {:.3f}, {:.3f}\n", seconds, _target1, rads1,
                rpm1, _target2, rads2, rpm2);
     // don't want to stop the task
@@ -294,6 +299,8 @@ esp_err_t on_esp_now_recv(uint8_t *src_addr, void *data, size_t size,
   // it _should_ be a valid command, so copy it into the command struct
   std::memcpy(&command, data_ptr, size);
 
+  static auto &bsp = Bsp::get();
+
   switch (command.code) {
   case CommandCode::NONE:
     return ESP_OK;
@@ -301,54 +308,59 @@ esp_err_t on_esp_now_recv(uint8_t *src_addr, void *data, size_t size,
     // disable the motors
     target1 = 0.0f;
     target2 = 0.0f;
-    if (motor1_ptr->is_enabled())
-      motor1_ptr->disable();
-    if (motor2_ptr->is_enabled())
-      motor2_ptr->disable();
+    if (motor1->is_enabled())
+      motor1->disable();
+    if (motor2->is_enabled())
+      motor2->disable();
+    // set the red led to indicate that the motors are stopped
+    bsp.set_red_led_duty(0.0f);
     break;
 
   case CommandCode::SET_ANGLE:
     motion_control_type = espp::detail::MotionControlType::ANGLE;
     if (!target_is_angle) {
       // disable the motors
-      motor1_ptr->disable();
-      motor2_ptr->disable();
+      motor1->disable();
+      motor2->disable();
       // update the motion control type
-      motor1_ptr->set_motion_control_type(motion_control_type);
-      motor2_ptr->set_motion_control_type(motion_control_type);
+      motor1->set_motion_control_type(motion_control_type);
+      motor2->set_motion_control_type(motion_control_type);
       // reset the angle for each motor, so that when we get a new target, it
       // doesn't jump to the new target from wherever it could have been if the
       // motor was running in speed control mode
-      static auto &bsp = Bsp::get();
       bsp.reset_encoder1_accumulator();
       bsp.reset_encoder2_accumulator();
     }
     target1 = command.angle_radians;
     target2 = command.angle_radians;
     target_is_angle = true;
-    if (!motor1_ptr->is_enabled())
-      motor1_ptr->enable();
-    if (!motor2_ptr->is_enabled())
-      motor2_ptr->enable();
+    if (!motor1->is_enabled())
+      motor1->enable();
+    if (!motor2->is_enabled())
+      motor2->enable();
+    // set the red led to indicate that the motors are running
+    bsp.set_red_led_duty(100.0f);
     break;
 
   case CommandCode::SET_SPEED:
     motion_control_type = espp::detail::MotionControlType::VELOCITY;
     if (target_is_angle) {
       // disable the motors
-      motor1_ptr->disable();
-      motor2_ptr->disable();
+      motor1->disable();
+      motor2->disable();
       // update the motion control type
-      motor1_ptr->set_motion_control_type(motion_control_type);
-      motor2_ptr->set_motion_control_type(motion_control_type);
+      motor1->set_motion_control_type(motion_control_type);
+      motor2->set_motion_control_type(motion_control_type);
     }
     target1 = command.speed_radians_per_second;
     target2 = command.speed_radians_per_second;
     target_is_angle = false;
-    if (!motor1_ptr->is_enabled())
-      motor1_ptr->enable();
-    if (!motor2_ptr->is_enabled())
-      motor2_ptr->enable();
+    if (!motor1->is_enabled())
+      motor1->enable();
+    if (!motor2->is_enabled())
+      motor2->enable();
+    // set the red led to indicate that the motors are running
+    bsp.set_red_led_duty(100.0f);
     break;
   }
 
