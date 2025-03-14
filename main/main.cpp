@@ -39,8 +39,8 @@ static auto motion_control_type = espp::detail::MotionControlType::ANGLE;
 std::atomic<float> target1 = 60.0f;
 std::atomic<float> target2 = 60.0f;
 static std::atomic<bool> target_is_angle =
-  motion_control_type == espp::detail::MotionControlType::ANGLE ||
-  motion_control_type == espp::detail::MotionControlType::ANGLE_OPENLOOP;
+    motion_control_type == espp::detail::MotionControlType::ANGLE ||
+    motion_control_type == espp::detail::MotionControlType::ANGLE_OPENLOOP;
 
 std::shared_ptr<espp::MotorGoMini::BldcMotor> motor1;
 std::shared_ptr<espp::MotorGoMini::BldcMotor> motor2;
@@ -57,8 +57,7 @@ static void espnow_event_handler(void *handler_args, esp_event_base_t base, int3
 static esp_err_t on_esp_now_recv(uint8_t *src_addr, void *data, size_t size,
                                  wifi_pkt_rx_ctrl_t *rx_ctrl);
 static void app_responder_ctrl_data_cb(espnow_attribute_t initiator_attribute,
-                              espnow_attribute_t responder_attribute,
-                              uint32_t status);
+                                       espnow_attribute_t responder_attribute, uint32_t status);
 static constexpr const char *bind_error_to_string(espnow_ctrl_bind_error_t bind_error);
 
 extern "C" void app_main(void) {
@@ -163,7 +162,7 @@ extern "C" void app_main(void) {
     return false; // don't want to stop the task
   };
 
-  static constexpr uint64_t core_update_period_us = 1000;                   // microseconds
+  static constexpr uint64_t core_update_period_us = 1000; // microseconds
   auto dual_motor_timer = espp::HighResolutionTimer({.name = "Motor Timer",
                                                      .callback = dual_motor_fn,
                                                      .log_level = espp::Logger::Verbosity::WARN});
@@ -210,14 +209,14 @@ extern "C" void app_main(void) {
     // don't want to stop the task
     return false;
   };
-  auto logging_task = espp::Timer({
-      .period = 10ms,
-      .callback = logging_fn,
-      .task_config = {
-        .name = "Logging Task",
-        .stack_size_bytes = 5 * 1024,
-      },
-      .log_level = espp::Logger::Verbosity::WARN});
+  auto logging_task = espp::Timer({.period = 10ms,
+                                   .callback = logging_fn,
+                                   .task_config =
+                                       {
+                                           .name = "Logging Task",
+                                           .stack_size_bytes = 5 * 1024,
+                                       },
+                                   .log_level = espp::Logger::Verbosity::WARN});
 
   std::this_thread::sleep_for(1s);
 
@@ -281,8 +280,7 @@ void espnow_event_handler(void *handler_args, esp_event_base_t base, int32_t id,
   }
 }
 
-esp_err_t on_esp_now_recv(uint8_t *src_addr, void *data, size_t size,
-                                     wifi_pkt_rx_ctrl_t *rx_ctrl) {
+esp_err_t on_esp_now_recv(uint8_t *src_addr, void *data, size_t size, wifi_pkt_rx_ctrl_t *rx_ctrl) {
   logger.debug("Received data from {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}", MAC2STR(src_addr));
   logger.debug("RSSI: {}", (int)rx_ctrl->rssi);
   uint8_t *data_ptr = reinterpret_cast<uint8_t *>(data);
@@ -368,22 +366,21 @@ esp_err_t on_esp_now_recv(uint8_t *src_addr, void *data, size_t size,
 }
 
 void app_responder_ctrl_data_cb(espnow_attribute_t initiator_attribute,
-                              espnow_attribute_t responder_attribute,
-                              uint32_t status) {
+                                espnow_attribute_t responder_attribute, uint32_t status) {
   // TODO: handle the control data
 }
 
 constexpr const char *bind_error_to_string(espnow_ctrl_bind_error_t bind_error) {
-    switch (bind_error) {
-    case ESPNOW_BIND_ERROR_NONE:
-        return "No error";
-    case ESPNOW_BIND_ERROR_TIMEOUT:
-        return "bind timeout";
-    case ESPNOW_BIND_ERROR_RSSI:
-        return "bind packet RSSI below expected threshold";
-    case ESPNOW_BIND_ERROR_LIST_FULL:
-        return "bindlist is full";
-    default:
-        return "unknown error";
-    }
+  switch (bind_error) {
+  case ESPNOW_BIND_ERROR_NONE:
+    return "No error";
+  case ESPNOW_BIND_ERROR_TIMEOUT:
+    return "bind timeout";
+  case ESPNOW_BIND_ERROR_RSSI:
+    return "bind packet RSSI below expected threshold";
+  case ESPNOW_BIND_ERROR_LIST_FULL:
+    return "bindlist is full";
+  default:
+    return "unknown error";
+  }
 }
