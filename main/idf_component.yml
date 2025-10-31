@@ -14,7 +14,7 @@ dependencies:
   #   # `public` flag doesn't have an effect dependencies of the `main` component.
   #   # All dependencies of `main` are public by default.
   #   public: true
-  espressif/esp-now: =*
+  espp/esp-now: '>=1.0'
   espp/motorgo-mini: '>=1.0'
   espp/filters: '>=1.0'
   espp/timer: '>=1.0'
